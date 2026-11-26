@@ -103,44 +103,128 @@ function addLog(level, message, nodeId = null) {
   io.emit('log:new', item);
 }
 
+// Parser for both Key-Value serial format (NODE:1,SMOKE:450,FLAME:0,FIRE:0,STATUS:ONLINE) and standard JSON
+function parseSerialPacket(rawLine) {
+  const line = rawLine.trim();
+  if (!line || line === '---' || line.startsWith('==') || line.startsWith('WiFi') || line.startsWith('ROOT') || line.startsWith('EPICS')) {
+    return null;
+  }
+
+  // 1. Check if JSON
+  if (line.startsWith('{') && line.endsWith('}')) {
+    try {
+      return JSON.parse(line);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 2. Check if key-value: NODE:1,SMOKE:450,FLAME:0,FIRE:0,STATUS:ONLINE
+  if (line.startsWith('NODE:')) {
+    const parts = line.split(',');
+    const packet = {
+      nodeId: null,
+      smoke: 0,
+      flame: 0,
+      fire: 0,
+      status: 'ONLINE'
+    };
+
+    for (const part of parts) {
+      const idx = part.indexOf(':');
+      if (idx === -1) continue;
+      const key = part.substring(0, idx).trim().toUpperCase();
+      const val = part.substring(idx + 1).trim();
+
+      if (key === 'NODE') packet.nodeId = parseInt(val, 10);
+      else if (key === 'SMOKE') packet.smoke = parseInt(val, 10);
+      else if (key === 'FLAME') packet.flame = parseInt(val, 10);
+      else if (key === 'FIRE') packet.fire = parseInt(val, 10);
+      else if (key === 'STATUS') packet.status = val.toUpperCase();
+    }
+
+    if (packet.nodeId && !isNaN(packet.nodeId)) {
+      return packet;
+    }
+  }
+
+  return null;
+}
+
 // Compute multi-sensor Fire Risk Score (0 - 100)
 function calculateFireRisk(node) {
   let risk = 0;
 
-  // Temperature factor (MLX90614 object temp)
-  if (node.tempObj > 70) risk += 50;
-  else if (node.tempObj > 50) risk += 35;
-  else if (node.tempObj > 38) risk += 15;
+  // If node explicitly flagged fire (from ESP32 firmware logic)
+  if (node.fire === 1) return 100;
 
-  // Smoke factor (MQ-2 analog)
-  if (node.smoke > 500) risk += 30;
-  else if (node.smoke > 300) risk += 20;
-  else if (node.smoke > 200) risk += 10;
+  // Flame sensor
+  if (node.flame === 1) risk += 50;
 
-  // Flame sensor (KY-026 active low or digital flag = 1)
-  if (node.flame === 1) risk += 40;
+  // Smoke factor (ESP32 ADC is 0 - 4095; threshold is 2000)
+  if (node.smoke > 2000) risk += 50;
+  else if (node.smoke > 1200) risk += 30;
+  else if (node.smoke > 500) risk += 15;
 
-  // Ambient difference: object temp much higher than ambient
-  if (node.tempObj - node.tempAmb > 15) risk += 15;
+  // Temperature factor
+  if (node.tempObj > 60) risk += 40;
+  else if (node.tempObj > 45) risk += 20;
 
   return Math.min(100, Math.max(0, Math.round(risk)));
 }
 
 // Process an incoming telemetry packet from either Serial or Simulator
 function handlePacket(data) {
-  const id = parseInt(data.nodeId || data.id, 10);
+  const id = parseInt(data.nodeId || data.id || data.node, 10);
   if (!id || !nodes[id]) return;
 
   const node = nodes[id];
+
+  // Handle explicit OFFLINE status from Root ESP32
+  if (data.status === 'OFFLINE') {
+    if (node.online) {
+      node.online = false;
+      addLog('WARN', `Node ${id} lost heartbeat: marked OFFLINE by Root gateway`, id);
+      io.emit('node:status', { id, online: false });
+    }
+    return;
+  }
+
+  const wasOffline = !node.online;
   node.online = true;
   node.lastSeen = Date.now();
+
+  if (wasOffline) {
+    addLog('RECOVERY', `Node ${id} reconnected to Root gateway`, id);
+    io.emit('node:status', { id, online: true });
+  }
+
   if (data.parent !== undefined) node.parent = parseInt(data.parent, 10);
+  else node.parent = (id === 1 ? 0 : 1);
+
   if (data.smoke !== undefined) node.smoke = Number(data.smoke);
   if (data.flame !== undefined) node.flame = Number(data.flame);
-  if (data.tempObj !== undefined) node.tempObj = Number(data.tempObj);
+  if (data.fire !== undefined) node.fire = Number(data.fire);
+
+  // Temperature handling: use real if sent, otherwise estimate ambient/fire response
+  if (data.tempObj !== undefined) {
+    node.tempObj = Number(data.tempObj);
+  } else {
+    // If flame/fire active, simulate thermal rise; otherwise normal ambient
+    node.tempObj = (node.flame === 1 || node.fire === 1 || node.smoke > 2000)
+      ? Number((68.0 + Math.random() * 6).toFixed(1))
+      : Number((25.5 + Math.random() * 0.8).toFixed(1));
+  }
+
   if (data.tempAmb !== undefined) node.tempAmb = Number(data.tempAmb);
+  else node.tempAmb = 24.2;
+
   if (data.humidity !== undefined) node.humidity = Number(data.humidity);
+  else node.humidity = 55.0;
+
   if (data.rssi !== undefined) node.rssi = Number(data.rssi);
+  else node.rssi = (id === 1) ? -45 : -62;
+
   if (data.battery !== undefined) node.battery = Number(data.battery);
 
   const prevRisk = node.fireRisk;
@@ -148,7 +232,7 @@ function handlePacket(data) {
 
   // Trigger alert if severe
   if (node.fireRisk >= 60 && prevRisk < 60) {
-    addLog('CRITICAL', `High Fire Risk (${node.fireRisk}%) detected on Node ${id}! Object Temp: ${node.tempObj.toFixed(1)}°C, Smoke: ${node.smoke}`, id);
+    addLog('CRITICAL', `FIRE DETECTED on Node ${id}! Smoke: ${node.smoke}, Flame: ${node.flame === 1 ? 'TRIGGERED' : 'CLEAR'}`, id);
   }
 
   io.emit('telemetry:update', node);
@@ -229,7 +313,7 @@ function connectSerialPort(comPath, baudRate = 115200) {
 
   try {
     activeSerial = new SerialPort({ path: comPath, baudRate: parseInt(baudRate, 10) });
-    activeParser = activeSerial.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+    activeParser = activeSerial.pipe(new ReadlineParser({ delimiter: '\n' }));
 
     activeSerial.on('open', () => {
       console.log(`[SerialPort] Connected to ${comPath} at ${baudRate} baud`);
@@ -241,11 +325,10 @@ function connectSerialPort(comPath, baudRate = 115200) {
     activeParser.on('data', line => {
       line = line.trim();
       if (!line) return;
-      try {
-        const json = JSON.parse(line);
-        handlePacket(json);
-      } catch (err) {
-        // Raw serial line debug
+      const packet = parseSerialPacket(line);
+      if (packet) {
+        handlePacket(packet);
+      } else if (line !== '---') {
         console.log('[Serial Raw]:', line);
       }
     });

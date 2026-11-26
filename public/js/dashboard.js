@@ -239,7 +239,15 @@ function updateCharts() {
   smokeChart.data.datasets[2].data.push(nodes[3].online ? nodes[3].smoke : null);
 
   const maxSmoke = Math.max(nodes[1].smoke, nodes[2].smoke, nodes[3].smoke);
-  smokeChart.options.scales.y.suggestedMax = maxSmoke > 350 ? Math.ceil(maxSmoke + 100) : 400;
+  if (maxSmoke > 600) {
+    smokeChart.data.datasets[3].data = Array(maxDataPoints).fill(2000);
+    smokeChart.data.datasets[3].label = 'Threshold (2000)';
+    smokeChart.options.scales.y.suggestedMax = Math.max(2500, Math.ceil(maxSmoke + 200));
+  } else {
+    smokeChart.data.datasets[3].data = Array(maxDataPoints).fill(300);
+    smokeChart.data.datasets[3].label = 'Threshold (300)';
+    smokeChart.options.scales.y.suggestedMax = maxSmoke > 350 ? Math.ceil(maxSmoke + 100) : 400;
+  }
   smokeChart.update();
 }
 
