@@ -1,32 +1,24 @@
 /**
- * EPICS Sensor Swarm Dashboard — Client Controller
- * Clean, straight-edged, light industrial UI. Zero emojis. True Mesh Topology.
+ * EPICS Sensor Swarm Dashboard — Hardware Controller (Real Data Only)
+ * Zero simulation. Real MQ-2 Smoke, KY-026 Flame, and Fire states.
  */
 
-// Initialize Socket.io
 const socket = io();
 
-// State store
+// Real Hardware Node States
 let nodes = {
-  1: { id: 1, name: 'Node 1', online: true, smoke: 120, flame: 0, tempObj: 26.0, tempAmb: 24.2, humidity: 55, rssi: -45, battery: 98, fireRisk: 2, parent: 0 },
-  2: { id: 2, name: 'Node 2', online: true, smoke: 130, flame: 0, tempObj: 26.5, tempAmb: 24.5, humidity: 56, rssi: -60, battery: 91, fireRisk: 3, parent: 1 },
-  3: { id: 3, name: 'Node 3', online: true, smoke: 115, flame: 0, tempObj: 25.8, tempAmb: 24.1, humidity: 57, rssi: -70, battery: 87, fireRisk: 1, parent: 2 }
-};
-
-let simState = {
-  active: true,
-  node2Fire: false,
-  node1Smoke: false,
-  node2Offline: false,
-  node3Offline: false
+  1: { id: 1, name: 'Node 1 (Root Gateway)', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null },
+  2: { id: 2, name: 'Node 2 (Field Mesh)', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null },
+  3: { id: 3, name: 'Node 3 (Field Mesh)', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null }
 };
 
 let audioEnabled = true;
 let audioContext = null;
 let lastBeepTime = 0;
 let alarmAcknowledged = false;
+let serialConnected = false;
 
-// Audio Buzzer using Web Audio API (Synthesizer tone, no external files)
+// Audio Buzzer using Web Audio API
 function playAlarmBuzzer() {
   if (!audioEnabled || alarmAcknowledged) return;
   const now = Date.now();
@@ -46,7 +38,7 @@ function playAlarmBuzzer() {
     osc.frequency.setValueAtTime(880, audioContext.currentTime);
     osc.frequency.setValueAtTime(440, audioContext.currentTime + 0.15);
 
-    gain.gain.setValueAtTime(0.2, audioContext.currentTime);
+    gain.gain.setValueAtTime(0.25, audioContext.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.35);
 
     osc.connect(gain);
@@ -59,7 +51,7 @@ function playAlarmBuzzer() {
   }
 }
 
-// Audio Toggle Button
+// Audio Toggle
 const audioBtn = document.getElementById('audio-toggle-btn');
 const audioLabel = document.getElementById('audio-toggle-label');
 if (audioBtn) {
@@ -72,78 +64,18 @@ if (audioBtn) {
   });
 }
 
-// Alarm Acknowledge
+// Alarm Mute
 document.getElementById('dismiss-alarm-btn')?.addEventListener('click', () => {
   alarmAcknowledged = true;
   document.getElementById('fire-alarm-banner').classList.add('hidden');
 });
 
-// Setup Chart.js (Strictly flat light theme, zero gradients)
-const maxDataPoints = 25;
+// =========================================================================
+// REAL SMOKE DENSITY CHART (0 - 4095 ADC)
+// =========================================================================
+const maxDataPoints = 30;
 const chartLabels = Array(maxDataPoints).fill('');
 
-// Temperature Chart
-const tempCtx = document.getElementById('tempChart').getContext('2d');
-const tempChart = new Chart(tempCtx, {
-  type: 'line',
-  data: {
-    labels: [...chartLabels],
-    datasets: [
-      {
-        label: 'Node 1 (Root)',
-        data: Array(maxDataPoints).fill(26.0),
-        borderColor: '#0f172a',
-        borderWidth: 2,
-        tension: 0,
-        pointRadius: 2,
-        fill: false
-      },
-      {
-        label: 'Node 2 (Field)',
-        data: Array(maxDataPoints).fill(26.5),
-        borderColor: '#0284c7',
-        borderWidth: 2,
-        tension: 0,
-        pointRadius: 2,
-        fill: false
-      },
-      {
-        label: 'Node 3 (Edge)',
-        data: Array(maxDataPoints).fill(25.8),
-        borderColor: '#059669',
-        borderWidth: 2,
-        tension: 0,
-        pointRadius: 2,
-        fill: false
-      }
-    ]
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: {
-      legend: {
-        position: 'top',
-        labels: { boxWidth: 12, font: { family: 'JetBrains Mono', size: 10 } }
-      }
-    },
-    scales: {
-      x: {
-        grid: { color: '#e2e8f0' },
-        ticks: { display: false }
-      },
-      y: {
-        grid: { color: '#e2e8f0' },
-        ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#475569' },
-        suggestedMin: 20,
-        suggestedMax: 40
-      }
-    }
-  }
-});
-
-// Smoke Chart
 const smokeCtx = document.getElementById('smokeChart').getContext('2d');
 const smokeChart = new Chart(smokeCtx, {
   type: 'line',
@@ -151,8 +83,8 @@ const smokeChart = new Chart(smokeCtx, {
     labels: [...chartLabels],
     datasets: [
       {
-        label: 'Node 1 Smoke',
-        data: Array(maxDataPoints).fill(120),
+        label: 'Node 1 (Root Gateway)',
+        data: Array(maxDataPoints).fill(0),
         borderColor: '#0f172a',
         borderWidth: 2,
         tension: 0,
@@ -160,8 +92,8 @@ const smokeChart = new Chart(smokeCtx, {
         fill: false
       },
       {
-        label: 'Node 2 Smoke',
-        data: Array(maxDataPoints).fill(130),
+        label: 'Node 2 (Field Mesh)',
+        data: Array(maxDataPoints).fill(0),
         borderColor: '#0284c7',
         borderWidth: 2,
         tension: 0,
@@ -169,8 +101,8 @@ const smokeChart = new Chart(smokeCtx, {
         fill: false
       },
       {
-        label: 'Node 3 Smoke',
-        data: Array(maxDataPoints).fill(115),
+        label: 'Node 3 (Field Mesh)',
+        data: Array(maxDataPoints).fill(0),
         borderColor: '#059669',
         borderWidth: 2,
         tension: 0,
@@ -178,11 +110,11 @@ const smokeChart = new Chart(smokeCtx, {
         fill: false
       },
       {
-        label: 'Threshold (300)',
-        data: Array(maxDataPoints).fill(300),
+        label: 'FIRE THRESHOLD (2000 ADC)',
+        data: Array(maxDataPoints).fill(2000),
         borderColor: '#dc2626',
         borderWidth: 1.5,
-        borderDash: [4, 4],
+        borderDash: [5, 4],
         pointRadius: 0,
         fill: false
       }
@@ -206,170 +138,208 @@ const smokeChart = new Chart(smokeCtx, {
       y: {
         grid: { color: '#e2e8f0' },
         ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#475569' },
-        suggestedMin: 50,
-        suggestedMax: 400
+        min: 0,
+        suggestedMax: 2500
       }
     }
   }
 });
 
-function updateCharts() {
+function updateSmokeChart() {
   const t = new Date().toLocaleTimeString('en-GB');
-
-  tempChart.data.labels.shift();
-  tempChart.data.labels.push(t);
-  tempChart.data.datasets[0].data.shift();
-  tempChart.data.datasets[0].data.push(nodes[1].online ? nodes[1].tempObj : null);
-  tempChart.data.datasets[1].data.shift();
-  tempChart.data.datasets[1].data.push(nodes[2].online ? nodes[2].tempObj : null);
-  tempChart.data.datasets[2].data.shift();
-  tempChart.data.datasets[2].data.push(nodes[3].online ? nodes[3].tempObj : null);
-
-  const maxTemp = Math.max(nodes[1].tempObj, nodes[2].tempObj, nodes[3].tempObj);
-  tempChart.options.scales.y.suggestedMax = maxTemp > 35 ? Math.ceil(maxTemp + 10) : 40;
-  tempChart.update();
 
   smokeChart.data.labels.shift();
   smokeChart.data.labels.push(t);
-  smokeChart.data.datasets[0].data.shift();
-  smokeChart.data.datasets[0].data.push(nodes[1].online ? nodes[1].smoke : null);
-  smokeChart.data.datasets[1].data.shift();
-  smokeChart.data.datasets[1].data.push(nodes[2].online ? nodes[2].smoke : null);
-  smokeChart.data.datasets[2].data.shift();
-  smokeChart.data.datasets[2].data.push(nodes[3].online ? nodes[3].smoke : null);
 
-  const maxSmoke = Math.max(nodes[1].smoke, nodes[2].smoke, nodes[3].smoke);
-  if (maxSmoke > 600) {
-    smokeChart.data.datasets[3].data = Array(maxDataPoints).fill(2000);
-    smokeChart.data.datasets[3].label = 'Threshold (2000)';
-    smokeChart.options.scales.y.suggestedMax = Math.max(2500, Math.ceil(maxSmoke + 200));
-  } else {
-    smokeChart.data.datasets[3].data = Array(maxDataPoints).fill(300);
-    smokeChart.data.datasets[3].label = 'Threshold (300)';
-    smokeChart.options.scales.y.suggestedMax = maxSmoke > 350 ? Math.ceil(maxSmoke + 100) : 400;
-  }
+  smokeChart.data.datasets[0].data.shift();
+  smokeChart.data.datasets[0].data.push(nodes[1].online ? nodes[1].smoke : 0);
+
+  smokeChart.data.datasets[1].data.shift();
+  smokeChart.data.datasets[1].data.push(nodes[2].online ? nodes[2].smoke : 0);
+
+  smokeChart.data.datasets[2].data.shift();
+  smokeChart.data.datasets[2].data.push(nodes[3].online ? nodes[3].smoke : 0);
+
+  const maxVal = Math.max(nodes[1].smoke, nodes[2].smoke, nodes[3].smoke);
+  smokeChart.options.scales.y.suggestedMax = Math.max(2500, Math.ceil(maxVal + 200));
   smokeChart.update();
 }
 
-// Render DOM Node Cards
+// =========================================================================
+// REAL DOM NODE CARDS
+// =========================================================================
 function updateNodeCard(node) {
   const id = node.id;
   const card = document.getElementById(`card-node-${id}`);
   const badge = document.getElementById(`badge-node-${id}`);
+  const smokeEl = document.getElementById(`smoke-${id}`);
+  const flameEl = document.getElementById(`flame-${id}`);
+  const fireStateEl = document.getElementById(`fire-state-${id}`);
+  const lastSeenEl = document.getElementById(`lastseen-${id}`);
+
   if (!card || !badge) return;
 
   if (!node.online) {
     badge.className = 'text-[10px] font-mono font-bold px-2 py-0.5 bg-red-100 text-red-800 border border-red-300';
     badge.textContent = 'OFFLINE';
     card.classList.add('opacity-60');
+
+    if (smokeEl) smokeEl.textContent = '0';
+    if (flameEl) {
+      flameEl.textContent = 'OFFLINE';
+      flameEl.className = 'text-base font-bold text-slate-400';
+    }
+    if (fireStateEl) {
+      fireStateEl.textContent = 'DISCONNECTED';
+      fireStateEl.className = 'text-xs font-mono font-bold text-slate-400';
+    }
     return;
   }
 
   card.classList.remove('opacity-60');
 
-  if (node.fireRisk >= 60) {
+  // Smoke
+  if (smokeEl) smokeEl.textContent = node.smoke;
+
+  // Flame
+  if (flameEl) {
+    if (node.flame === 1) {
+      flameEl.textContent = 'FLAME ACTIVE (1)';
+      flameEl.className = 'text-base font-bold text-red-600';
+    } else {
+      flameEl.textContent = 'CLEAR (0)';
+      flameEl.className = 'text-base font-bold text-emerald-700';
+    }
+  }
+
+  // Fire state
+  const isFire = (node.fire === 1 || node.smoke > 2000 || node.flame === 1);
+  if (fireStateEl) {
+    if (isFire) {
+      fireStateEl.textContent = 'FIRE HAZARD DETECTED';
+      fireStateEl.className = 'text-xs font-mono font-bold text-red-600 alarm-pulse';
+    } else {
+      fireStateEl.textContent = 'NORMAL';
+      fireStateEl.className = 'text-xs font-mono font-bold text-emerald-700';
+    }
+  }
+
+  // Status Badge
+  if (isFire) {
     badge.className = 'text-[10px] font-mono font-bold px-2 py-0.5 bg-red-600 text-white border border-red-800 alarm-pulse';
-    badge.textContent = 'CRITICAL FIRE';
-  } else if (node.fireRisk >= 30) {
-    badge.className = 'text-[10px] font-mono font-bold px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300';
-    badge.textContent = 'WARNING';
+    badge.textContent = 'FIRE ALARM';
   } else {
     badge.className = 'text-[10px] font-mono font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300';
     badge.textContent = 'ONLINE';
   }
 
-  document.getElementById(`temp-obj-${id}`).textContent = `${node.tempObj.toFixed(1)}°C`;
-  document.getElementById(`temp-amb-${id}`).textContent = `Amb: ${node.tempAmb.toFixed(1)}°C`;
-  document.getElementById(`smoke-${id}`).textContent = node.smoke;
-
-  const flameEl = document.getElementById(`flame-${id}`);
-  if (node.flame === 1) {
-    flameEl.textContent = 'TRIGGERED';
-    flameEl.className = 'text-sm font-bold text-red-600';
-  } else {
-    flameEl.textContent = 'CLEAR';
-    flameEl.className = 'text-sm font-bold text-emerald-700';
-  }
-
-  document.getElementById(`humid-${id}`).textContent = `${node.humidity.toFixed(1)}%`;
-  document.getElementById(`rssi-${id}`).textContent = `${node.rssi} dBm`;
-  document.getElementById(`bat-${id}`).textContent = `${node.battery}%`;
-
-  const riskVal = document.getElementById(`risk-val-${id}`);
-  const riskBar = document.getElementById(`risk-bar-${id}`);
-  riskVal.textContent = `${node.fireRisk}%`;
-  riskBar.style.width = `${node.fireRisk}%`;
-
-  if (node.fireRisk >= 60) {
-    riskBar.className = 'bg-red-600 h-full transition-all duration-300';
-  } else if (node.fireRisk >= 30) {
-    riskBar.className = 'bg-amber-500 h-full transition-all duration-300';
-  } else {
-    riskBar.className = 'bg-emerald-600 h-full transition-all duration-300';
+  // Last seen
+  if (lastSeenEl && node.lastSeen) {
+    const d = new Date(node.lastSeen);
+    lastSeenEl.textContent = `LAST: ${d.toLocaleTimeString('en-GB')}`;
   }
 }
 
-// Update Top KPI Summary
+// =========================================================================
+// TOP KPI SUMMARY (REAL HARDWARE NUMBERS)
+// =========================================================================
 function updateKpis() {
   const onlineCount = Object.values(nodes).filter(n => n.online).length;
-  document.getElementById('stat-active-nodes').textContent = `${onlineCount}/3`;
+  const activeNodesEl = document.getElementById('stat-active-nodes');
+  const activeTagEl = document.getElementById('stat-active-tag');
 
-  let peakTemp = -999;
-  let peakSmoke = -1;
-  let maxRisk = 0;
-  let riskyNode = null;
+  if (activeNodesEl) {
+    activeNodesEl.textContent = `${onlineCount}/3`;
+  }
+  if (activeTagEl) {
+    if (onlineCount === 0) {
+      activeTagEl.textContent = serialConnected ? 'AWAITING UDP NODES' : 'NO HARDWARE';
+      activeTagEl.className = 'text-xs font-medium text-slate-500 font-mono';
+    } else if (onlineCount === 3) {
+      activeTagEl.textContent = 'FULL SWARM ONLINE';
+      activeTagEl.className = 'text-xs font-medium text-emerald-700 font-mono';
+    } else {
+      activeTagEl.textContent = 'PARTIAL MESH';
+      activeTagEl.className = 'text-xs font-medium text-amber-700 font-mono';
+    }
+  }
+
+  // Peak smoke
+  let peakSmoke = 0;
+  let hasFire = false;
+  let fireNodeId = null;
 
   Object.values(nodes).forEach(n => {
     if (n.online) {
-      if (n.tempObj > peakTemp) peakTemp = n.tempObj;
       if (n.smoke > peakSmoke) peakSmoke = n.smoke;
-      if (n.fireRisk > maxRisk) {
-        maxRisk = n.fireRisk;
-        riskyNode = n;
+      if (n.fire === 1 || n.smoke > 2000 || n.flame === 1) {
+        hasFire = true;
+        fireNodeId = n.id;
       }
     }
   });
 
-  const tempEl = document.getElementById('stat-peak-temp');
-  const tempTag = document.getElementById('stat-temp-tag');
-  if (peakTemp > -999) {
-    tempEl.textContent = `${peakTemp.toFixed(1)}°C`;
-    if (peakTemp > 50) {
-      tempTag.textContent = 'ELEVATED';
-      tempTag.className = 'text-xs font-medium text-red-600 font-mono';
+  const peakSmokeEl = document.getElementById('stat-peak-smoke');
+  const smokeTagEl = document.getElementById('stat-smoke-tag');
+  if (peakSmokeEl) {
+    peakSmokeEl.textContent = peakSmoke;
+  }
+  if (smokeTagEl) {
+    if (peakSmoke > 2000) {
+      smokeTagEl.textContent = 'CRITICAL (EXCEEDS 2000)';
+      smokeTagEl.className = 'text-xs font-bold text-red-600 font-mono';
     } else {
-      tempTag.textContent = 'NORMAL';
-      tempTag.className = 'text-xs font-medium text-slate-500 font-mono';
+      smokeTagEl.textContent = 'BELOW 2000 THRESHOLD';
+      smokeTagEl.className = 'text-xs font-medium text-slate-500 font-mono';
     }
   }
 
-  const smokeEl = document.getElementById('stat-peak-smoke');
-  const smokeTag = document.getElementById('stat-smoke-tag');
-  if (peakSmoke >= 0) {
-    smokeEl.textContent = peakSmoke;
-    if (peakSmoke > 300) {
-      smokeTag.textContent = 'HIGH';
-      smokeTag.className = 'text-xs font-medium text-red-600 font-mono';
-    } else {
-      smokeTag.textContent = 'BASELINE';
-      smokeTag.className = 'text-xs font-medium text-slate-500 font-mono';
-    }
-  }
-
-  // Fire Alert Banner
+  // Fire condition
+  const condEl = document.getElementById('stat-fire-condition');
   const alarmBanner = document.getElementById('fire-alarm-banner');
   const alarmDetails = document.getElementById('alarm-banner-details');
-  if (maxRisk >= 60 && !alarmAcknowledged) {
+
+  if (condEl) {
+    if (hasFire) {
+      condEl.textContent = 'FIRE DETECTED';
+      condEl.className = 'text-2xl font-bold font-mono text-red-600';
+    } else {
+      condEl.textContent = 'CLEAR';
+      condEl.className = 'text-2xl font-bold font-mono text-emerald-700';
+    }
+  }
+
+  if (hasFire && !alarmAcknowledged) {
     alarmBanner.classList.remove('hidden');
-    alarmDetails.textContent = `ALERT: Node ${riskyNode.id} reports ${riskyNode.tempObj.toFixed(1)}°C and smoke level ${riskyNode.smoke}. Fire risk calculated at ${maxRisk}%.`;
+    alarmDetails.textContent = `ALERT: Node ${fireNodeId} reports active fire condition (Smoke: ${nodes[fireNodeId].smoke}, Flame: ${nodes[fireNodeId].flame}).`;
     playAlarmBuzzer();
-  } else if (maxRisk < 60) {
+  } else if (!hasFire) {
     alarmAcknowledged = false;
     alarmBanner.classList.add('hidden');
   }
+
+  // Topology badge
+  const topoBadge = document.getElementById('topology-healing-badge');
+  if (topoBadge) {
+    if (!serialConnected) {
+      topoBadge.textContent = 'Awaiting Serial Stream';
+      topoBadge.className = 'text-[11px] font-mono font-semibold bg-slate-100 text-slate-700 px-2 py-1 border border-slate-300';
+    } else if (onlineCount === 3) {
+      topoBadge.textContent = '3 Nodes Active';
+      topoBadge.className = 'text-[11px] font-mono font-semibold bg-emerald-100 text-emerald-800 px-2 py-1 border border-emerald-300';
+    } else if (onlineCount > 0) {
+      topoBadge.textContent = `${onlineCount}/3 Nodes Connected`;
+      topoBadge.className = 'text-[11px] font-mono font-semibold bg-amber-100 text-amber-800 px-2 py-1 border border-amber-300';
+    } else {
+      topoBadge.textContent = 'Serial Open (0 Nodes)';
+      topoBadge.className = 'text-[11px] font-mono font-semibold bg-slate-100 text-slate-700 px-2 py-1 border border-slate-300';
+    }
+  }
 }
 
-// Add Entry to Audit Table
+// =========================================================================
+// EVENT LOG
+// =========================================================================
 function appendLog(log) {
   const tbody = document.getElementById('event-log-tbody');
   if (!tbody) return;
@@ -380,9 +350,8 @@ function appendLog(log) {
   let badgeClass = 'bg-slate-100 text-slate-700 border-slate-300';
   if (log.level === 'CRITICAL') badgeClass = 'bg-red-100 text-red-800 border-red-300 font-bold';
   if (log.level === 'WARN') badgeClass = 'bg-amber-100 text-amber-800 border-amber-300';
-  if (log.level === 'RECOVERY') badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-300';
 
-  const originText = log.nodeId ? `NODE-0${log.nodeId}` : 'GATEWAY';
+  const originText = log.nodeId ? `NODE-0${log.nodeId}` : 'SERIAL';
 
   tr.innerHTML = `
     <td class="py-2 px-3 text-slate-500">${log.time}</td>
@@ -400,18 +369,36 @@ function appendLog(log) {
   }
 }
 
-// Clear log button
 document.getElementById('btn-clear-log')?.addEventListener('click', () => {
   const tbody = document.getElementById('event-log-tbody');
   if (tbody) tbody.innerHTML = '';
 });
 
+// Append incoming raw serial line
+function appendRawSerial(line) {
+  const box = document.getElementById('serial-raw-box');
+  if (!box) return;
+
+  if (box.children.length === 1 && box.children[0].tagName === 'SPAN') {
+    box.innerHTML = '';
+  }
+
+  const p = document.createElement('div');
+  p.className = 'text-[10px] text-slate-700 truncate';
+  p.textContent = line;
+  box.appendChild(p);
+
+  while (box.children.length > 20) {
+    box.removeChild(box.firstChild);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
 // =========================================================================
-// TRIANGULAR MESH TOPOLOGY CANVAS (Proves Mesh & Dynamic Self-Healing)
+// REAL TOPOLOGY CANVAS
 // =========================================================================
 const canvas = document.getElementById('topologyCanvas');
 const ctx = canvas.getContext('2d');
-let animPacket = 0;
 
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
@@ -429,84 +416,46 @@ function drawTopology() {
 
   ctx.clearRect(0, 0, w, h);
 
-  // Triangular coordinates:
-  // Station on far left, Node 1 in middle-left, Node 2 top-right, Node 3 bottom-right
-  const posGateway = { x: 75, y: h / 2, label: 'HOST LAPTOP', sub: 'USB Serial Gateway' };
-  const posNode1 = { x: w * 0.36, y: h / 2, label: 'NODE 01 (ROOT)', sub: 'Mesh Gateway', id: 1 };
-  const posNode2 = { x: w * 0.76, y: h * 0.28, label: 'NODE 02', sub: 'Field Zone A', id: 2 };
-  const posNode3 = { x: w * 0.76, y: h * 0.72, label: 'NODE 03', sub: 'Field Zone B', id: 3 };
+  const posLaptop = { x: 75, y: h / 2, label: 'HOST LAPTOP', sub: 'USB Interface' };
+  const posNode1 = { x: w * 0.36, y: h / 2, label: 'NODE 01 (ROOT)', sub: 'AP: EPICS_MESH_ROOT', id: 1 };
+  const posNode2 = { x: w * 0.76, y: h * 0.28, label: 'NODE 02', sub: 'UDP Port: 5000', id: 2 };
+  const posNode3 = { x: w * 0.76, y: h * 0.72, label: 'NODE 03', sub: 'UDP Port: 5000', id: 3 };
 
-  // Packet animation index (0 to 100)
-  animPacket = (animPacket + 0.5) % 100;
-
-  // 1. USB Wired Link: Laptop Station <-> Root Node 1
-  ctx.lineWidth = 2.5;
-  ctx.strokeStyle = '#0f172a';
-  ctx.setLineDash([]);
+  // 1. USB Wired link: Laptop <-> Root Node 1
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = serialConnected ? '#0f172a' : '#cbd5e1';
+  ctx.setLineDash(serialConnected ? [] : [4, 4]);
   ctx.beginPath();
-  ctx.moveTo(posGateway.x + 48, posGateway.y);
+  ctx.moveTo(posLaptop.x + 48, posLaptop.y);
   ctx.lineTo(posNode1.x - 48, posNode1.y);
   ctx.stroke();
+  ctx.setLineDash([]);
 
-  // Packet moving on USB wire
-  const wireX = (posGateway.x + 48) + ((posNode1.x - 48) - (posGateway.x + 48)) * (animPacket / 100);
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(wireX - 3, posGateway.y - 3, 6, 6);
+  // 2. Wi-Fi UDP Link: Root Node 1 <---> Node 2
+  drawLink(posNode1, posNode2, nodes[2].online, nodes[2].online ? 'UDP LINK ACTIVE' : 'NODE 2 OFFLINE');
 
-  // =======================================================================
-  // 2. THE MESH TRIANGLE (3 Wireless Radio Paths)
-  // =======================================================================
+  // 3. Wi-Fi UDP Link: Root Node 1 <---> Node 3
+  drawLink(posNode1, posNode3, nodes[3].online, nodes[3].online ? 'UDP LINK ACTIVE' : 'NODE 3 OFFLINE');
 
-  // LINK 1: Node 1 (Root) <---> Node 2
-  const link1Online = nodes[1].online && nodes[2].online;
-  drawMeshEdge(posNode1, posNode2, link1Online, link1Online ? 'ACTIVE ROUTE' : 'DISCONNECTED', link1Online ? '#0284c7' : '#ef4444', link1Online, false);
-
-  // LINK 2: Node 2 <---> Node 3 (Inter-Node Peer-to-Peer Mesh Link)
-  const link2Online = nodes[2].online && nodes[3].online;
-  drawMeshEdge(posNode2, posNode3, link2Online, link2Online ? 'PEER LINK (MULTI-HOP)' : 'PEER LINK BROKEN', link2Online ? '#059669' : '#ef4444', link2Online, false);
-
-  // LINK 3: Node 1 (Root) <---> Node 3 (Direct / Self-Healing Reroute)
-  // When Node 2 is alive, Link 3 is a STANDBY backup route.
-  // When Node 2 fails, Link 3 dynamically BECOMES ACTIVE (Proving Self-Healing)!
-  const node2Dead = !nodes[2].online;
-  const link3Online = nodes[1].online && nodes[3].online;
-
-  if (node2Dead && link3Online) {
-    // SELF-HEALED ACTIVE ROUTE
-    drawMeshEdge(posNode1, posNode3, true, 'SELF-HEALED (DIRECT)', '#d97706', true, false, 2.5);
-  } else {
-    // STANDBY BACKUP ROUTE (Shows professors that direct connection is available on standby)
-    drawMeshEdge(posNode1, posNode3, true, 'STANDBY BACKUP ROUTE', '#94a3b8', false, true, 1.2);
-  }
-
-  // Draw Node Boxes (Crisp, strictly straight edges)
-  drawBox(posGateway.x, posGateway.y, 96, 46, '#0f172a', '#ffffff', posGateway.label, posGateway.sub);
-  drawNode(posNode1.x, posNode1.y, posNode1.label, `Temp: ${nodes[1].tempObj}°C`, nodes[1].online, nodes[1].fireRisk);
-  drawNode(posNode2.x, posNode2.y, posNode2.label, `Temp: ${nodes[2].tempObj}°C`, nodes[2].online, nodes[2].fireRisk);
-  drawNode(posNode3.x, posNode3.y, posNode3.label, `Temp: ${nodes[3].tempObj}°C`, nodes[3].online, nodes[3].fireRisk);
+  // Draw Boxes
+  drawBox(posLaptop.x, posLaptop.y, 96, 46, '#0f172a', '#ffffff', posLaptop.label, posLaptop.sub);
+  drawNode(posNode1.x, posNode1.y, posNode1.label, `Smoke: ${nodes[1].smoke}`, nodes[1].online, nodes[1].fire);
+  drawNode(posNode2.x, posNode2.y, posNode2.label, `Smoke: ${nodes[2].smoke}`, nodes[2].online, nodes[2].fire);
+  drawNode(posNode3.x, posNode3.y, posNode3.label, `Smoke: ${nodes[3].smoke}`, nodes[3].online, nodes[3].fire);
 
   requestAnimationFrame(drawTopology);
 }
 
-function drawMeshEdge(from, to, isConnected, labelText, strokeColor, showPackets, isDashed = false, strokeWidth = 2) {
-  ctx.lineWidth = strokeWidth;
-  ctx.strokeStyle = strokeColor;
-  ctx.setLineDash(isDashed || !isConnected ? [5, 4] : []);
+function drawLink(from, to, isOnline, label) {
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = isOnline ? '#059669' : '#ef4444';
+  ctx.setLineDash(isOnline ? [] : [4, 4]);
 
   ctx.beginPath();
   ctx.moveTo(from.x, from.y);
   ctx.lineTo(to.x, to.y);
   ctx.stroke();
   ctx.setLineDash([]);
-
-  // Animated packet along link if active
-  if (showPackets && isConnected) {
-    const fraction = (animPacket / 100);
-    const px = to.x + (from.x - to.x) * fraction;
-    const py = to.y + (from.y - to.y) * fraction;
-    ctx.fillStyle = strokeColor;
-    ctx.fillRect(px - 3, py - 3, 6, 6);
-  }
 
   // Midpoint label
   const midX = (from.x + to.x) / 2;
@@ -518,11 +467,11 @@ function drawMeshEdge(from, to, isConnected, labelText, strokeColor, showPackets
   ctx.strokeStyle = '#cbd5e1';
   ctx.strokeRect(midX - 44, midY - 8, 88, 16);
 
-  ctx.fillStyle = isConnected ? (strokeColor === '#94a3b8' ? '#64748b' : strokeColor) : '#ef4444';
+  ctx.fillStyle = isOnline ? '#059669' : '#ef4444';
   ctx.font = 'bold 8px "JetBrains Mono"';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(labelText, midX, midY);
+  ctx.fillText(label, midX, midY);
 }
 
 function drawBox(x, y, w, h, bg, textCol, title, subtitle) {
@@ -544,10 +493,10 @@ function drawBox(x, y, w, h, bg, textCol, title, subtitle) {
   ctx.fillText(subtitle, x, y + 8);
 }
 
-function drawNode(x, y, title, subtitle, isOnline, fireRisk) {
+function drawNode(x, y, title, subtitle, isOnline, fireState) {
   const w = 96;
   const h = 50;
-  const isAlarm = fireRisk >= 60;
+  const isAlarm = fireState === 1;
 
   let bg = '#ffffff';
   let border = '#1e293b';
@@ -570,7 +519,6 @@ function drawNode(x, y, title, subtitle, isOnline, fireRisk) {
   ctx.strokeStyle = border;
   ctx.strokeRect(x - w / 2, y - h / 2, w, h);
 
-  // Status indicator corner badge
   ctx.fillStyle = isOnline ? (isAlarm ? '#ffffff' : '#059669') : '#dc2626';
   ctx.fillRect(x + w / 2 - 8, y - h / 2 + 2, 6, 6);
 
@@ -585,71 +533,10 @@ function drawNode(x, y, title, subtitle, isOnline, fireRisk) {
   ctx.fillText(isOnline ? subtitle : 'OFFLINE', x, y + 8);
 }
 
-// Start rendering
 requestAnimationFrame(drawTopology);
 
 // =========================================================================
-// DEMO CONTROLS (Self-healing & Fire trigger testing)
-// =========================================================================
-async function sendSimControl(action, value) {
-  try {
-    const res = await fetch('/api/sim/control', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, value })
-    });
-    const data = await res.json();
-    updateSimButtonTags(data.simOverrides);
-  } catch (err) {
-    console.error('Sim control error:', err);
-  }
-}
-
-function updateSimButtonTags(overrides) {
-  const tagOffline = document.getElementById('tag-node2-offline');
-  if (tagOffline) {
-    tagOffline.textContent = overrides.node2Offline ? 'DEAD (HEALED 3->1)' : 'ONLINE';
-    tagOffline.className = overrides.node2Offline ? 'font-mono text-[10px] text-amber-600 font-bold' : 'font-mono text-[10px] text-slate-500';
-  }
-
-  const tagFire = document.getElementById('tag-node2-fire');
-  if (tagFire) {
-    tagFire.textContent = overrides.node2Fire ? 'FIRE (75°C)' : 'NORMAL';
-    tagFire.className = overrides.node2Fire ? 'font-mono text-[10px] text-red-600 font-bold' : 'font-mono text-[10px] text-slate-500';
-  }
-
-  const tagSmoke = document.getElementById('tag-node1-smoke');
-  if (tagSmoke) {
-    tagSmoke.textContent = overrides.node1Smoke ? 'SMOKE HIGH' : 'NORMAL';
-    tagSmoke.className = overrides.node1Smoke ? 'font-mono text-[10px] text-amber-600 font-bold' : 'font-mono text-[10px] text-slate-500';
-  }
-}
-
-document.getElementById('btn-trigger-offline')?.addEventListener('click', () => {
-  simState.node2Offline = !simState.node2Offline;
-  sendSimControl('node2Offline', simState.node2Offline);
-});
-
-document.getElementById('btn-trigger-fire')?.addEventListener('click', () => {
-  simState.node2Fire = !simState.node2Fire;
-  sendSimControl('node2Fire', simState.node2Fire);
-});
-
-document.getElementById('btn-trigger-smoke')?.addEventListener('click', () => {
-  simState.node1Smoke = !simState.node1Smoke;
-  sendSimControl('node1Smoke', simState.node1Smoke);
-});
-
-document.getElementById('btn-reset-all')?.addEventListener('click', () => {
-  simState.node2Fire = false;
-  simState.node1Smoke = false;
-  simState.node2Offline = false;
-  simState.node3Offline = false;
-  sendSimControl('resetAll');
-});
-
-// =========================================================================
-// SERIAL PORT CONTROLLER
+// SERIAL PORT CONNECTION HANDLERS
 // =========================================================================
 async function refreshSerialPorts() {
   const select = document.getElementById('serial-port-select');
@@ -672,23 +559,27 @@ async function refreshSerialPorts() {
       select.appendChild(opt);
     });
   } catch (e) {
-    select.innerHTML = '<option value="">Serial Scan Failed</option>';
+    select.innerHTML = '<option value="">Scan Failed</option>';
   }
 }
 refreshSerialPorts();
 
+document.getElementById('btn-refresh-ports')?.addEventListener('click', refreshSerialPorts);
+
 document.getElementById('btn-serial-connect')?.addEventListener('click', async () => {
   const select = document.getElementById('serial-port-select');
   const portPath = select.value;
-  const msgEl = document.getElementById('serial-msg');
+  const msgEl = document.getElementById('serial-status-msg');
 
   if (!portPath) {
-    msgEl.textContent = 'Please choose a valid COM port.';
-    msgEl.className = 'text-[11px] font-mono text-red-600 mt-1';
+    msgEl.textContent = 'Please select a valid COM port.';
+    msgEl.className = 'text-xs font-mono text-red-600';
     return;
   }
 
-  msgEl.textContent = `Connecting to ${portPath}...`;
+  msgEl.textContent = `Connecting to ${portPath} @ 115200 baud...`;
+  msgEl.className = 'text-xs font-mono text-slate-700';
+
   try {
     const res = await fetch('/api/serial/connect', {
       method: 'POST',
@@ -697,28 +588,40 @@ document.getElementById('btn-serial-connect')?.addEventListener('click', async (
     });
     const json = await res.json();
     if (json.success) {
-      msgEl.textContent = `Connected to ${portPath} @ 115200`;
-      msgEl.className = 'text-[11px] font-mono text-emerald-700 mt-1';
-      document.getElementById('gateway-mode-label').textContent = `LIVE SERIAL (${portPath})`;
+      msgEl.textContent = `Connected to ${portPath} (115200 baud)`;
+      msgEl.className = 'text-xs font-mono text-emerald-700 font-bold';
     } else {
       msgEl.textContent = `Error: ${json.error}`;
-      msgEl.className = 'text-[11px] font-mono text-red-600 mt-1';
+      msgEl.className = 'text-xs font-mono text-red-600';
     }
   } catch (err) {
-    msgEl.textContent = `Failed to connect: ${err.message}`;
-    msgEl.className = 'text-[11px] font-mono text-red-600 mt-1';
+    msgEl.textContent = `Connection error: ${err.message}`;
+    msgEl.className = 'text-xs font-mono text-red-600';
   }
 });
 
+document.getElementById('btn-serial-disconnect')?.addEventListener('click', async () => {
+  const msgEl = document.getElementById('serial-status-msg');
+  try {
+    await fetch('/api/serial/disconnect', { method: 'POST' });
+    msgEl.textContent = 'Disconnected from port.';
+    msgEl.className = 'text-xs font-mono text-slate-500';
+  } catch (e) {}
+});
+
 // =========================================================================
-// SOCKET.IO EVENT HANDLERS
+// SOCKET.IO EVENTS
 // =========================================================================
 socket.on('init:state', data => {
   nodes = data.nodes;
-  simState = data.simOverrides;
   Object.values(nodes).forEach(n => updateNodeCard(n));
   updateKpis();
-  updateSimButtonTags(simState);
+
+  if (data.connectedPort) {
+    serialConnected = true;
+    document.getElementById('serial-status-dot').className = 'w-2.5 h-2.5 bg-emerald-600 inline-block';
+    document.getElementById('serial-mode-label').textContent = `LIVE (${data.connectedPort})`;
+  }
 
   if (data.eventLog) {
     data.eventLog.slice().reverse().forEach(l => appendLog(l));
@@ -729,34 +632,38 @@ socket.on('telemetry:update', node => {
   nodes[node.id] = node;
   updateNodeCard(node);
   updateKpis();
-  updateCharts();
+  updateSmokeChart();
 });
 
-socket.on('node:status', data => {
-  if (nodes[data.id]) {
-    nodes[data.id].online = data.online;
-    updateNodeCard(nodes[data.id]);
-    updateKpis();
+socket.on('serial:raw', line => {
+  appendRawSerial(line);
+});
+
+socket.on('serial:status', status => {
+  const dot = document.getElementById('serial-status-dot');
+  const label = document.getElementById('serial-mode-label');
+  const msgEl = document.getElementById('serial-status-msg');
+
+  if (status.connected) {
+    serialConnected = true;
+    dot.className = 'w-2.5 h-2.5 bg-emerald-600 inline-block';
+    label.textContent = `LIVE (${status.port})`;
+    if (msgEl) {
+      msgEl.textContent = `Streaming data from ${status.port} @ 115200`;
+      msgEl.className = 'text-xs font-mono text-emerald-700 font-bold';
+    }
+  } else {
+    serialConnected = false;
+    dot.className = 'w-2.5 h-2.5 bg-red-600 inline-block';
+    label.textContent = 'DISCONNECTED';
+    if (msgEl) {
+      msgEl.textContent = status.error ? `Error: ${status.error}` : 'Disconnected from serial port.';
+      msgEl.className = status.error ? 'text-xs font-mono text-red-600' : 'text-xs font-mono text-slate-500';
+    }
   }
+  updateKpis();
 });
 
 socket.on('log:new', log => {
   appendLog(log);
-});
-
-socket.on('sim:state', state => {
-  simState = state;
-  updateSimButtonTags(state);
-});
-
-socket.on('serial:status', status => {
-  const dot = document.getElementById('gateway-status-dot');
-  const label = document.getElementById('gateway-mode-label');
-  if (status.connected) {
-    dot.className = 'w-2.5 h-2.5 bg-emerald-600 inline-block';
-    label.textContent = `LIVE SERIAL (${status.port})`;
-  } else {
-    dot.className = 'w-2.5 h-2.5 bg-blue-600 inline-block';
-    label.textContent = 'SIMULATED MESH';
-  }
 });
