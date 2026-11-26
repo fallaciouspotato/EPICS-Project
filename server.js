@@ -24,9 +24,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Real node states — initial state is OFFLINE with 0 values until real hardware streams
 const nodes = {
-  1: { id: 1, name: 'Node 1 (Root Gateway)', role: 'Root / Sensor Gateway', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null },
-  2: { id: 2, name: 'Node 2 (Field Mesh)', role: 'Mesh Sensor Node', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null },
-  3: { id: 3, name: 'Node 3 (Field Mesh)', role: 'Mesh Sensor Node', online: false, smoke: 0, flame: 0, fire: 0, lastSeen: null }
+  1: { id: 1, name: 'Node 1 (Root Gateway)', role: 'Root / Sensor Gateway', online: false, parent: 0, hops: 0, rssi: 0, smoke: 0, flame: 0, fire: 0, lastSeen: null },
+  2: { id: 2, name: 'Node 2 (Field Mesh)', role: 'Mesh Sensor Node / AP Relay', online: false, parent: 1, hops: 1, rssi: 0, smoke: 0, flame: 0, fire: 0, lastSeen: null },
+  3: { id: 3, name: 'Node 3 (Field Mesh)', role: 'Mesh Sensor Node', online: false, parent: 1, hops: 1, rssi: 0, smoke: 0, flame: 0, fire: 0, lastSeen: null }
 };
 
 // Event log
@@ -44,7 +44,7 @@ function addLog(level, message, nodeId = null) {
   io.emit('log:new', item);
 }
 
-// Parse exact ESP32 key-value line: NODE:1,SMOKE:450,FLAME:0,FIRE:0,STATUS:ONLINE
+// Parse exact ESP32 key-value line: NODE:1,PARENT:0,HOPS:0,SMOKE:450,FLAME:0,FIRE:0,RSSI:-55,STATUS:ONLINE
 function parseSerialPacket(rawLine) {
   const line = rawLine.trim();
   if (!line || line === '---' || line.startsWith('==') || line.startsWith('WiFi') || line.startsWith('ROOT') || line.startsWith('EPICS')) {
@@ -55,6 +55,9 @@ function parseSerialPacket(rawLine) {
     const parts = line.split(',');
     const packet = {
       nodeId: null,
+      parent: 1,
+      hops: 1,
+      rssi: 0,
       smoke: 0,
       flame: 0,
       fire: 0,
@@ -68,6 +71,9 @@ function parseSerialPacket(rawLine) {
       const val = part.substring(idx + 1).trim();
 
       if (key === 'NODE') packet.nodeId = parseInt(val, 10);
+      else if (key === 'PARENT') packet.parent = parseInt(val, 10);
+      else if (key === 'HOPS') packet.hops = parseInt(val, 10);
+      else if (key === 'RSSI') packet.rssi = parseInt(val, 10);
       else if (key === 'SMOKE') packet.smoke = parseInt(val, 10);
       else if (key === 'FLAME') packet.flame = parseInt(val, 10);
       else if (key === 'FIRE') packet.fire = parseInt(val, 10);
@@ -89,18 +95,33 @@ function handlePacket(pkt) {
   if (!node) return;
 
   const wasOnline = node.online;
+  const oldParent = node.parent;
   const isOnline = pkt.status === 'ONLINE';
 
   node.online = isOnline;
   node.smoke = Number(pkt.smoke || 0);
   node.flame = Number(pkt.flame || 0);
   node.fire = Number(pkt.fire || 0);
+  node.parent = Number(pkt.parent !== undefined ? pkt.parent : (id === 1 ? 0 : 1));
+  node.hops = Number(pkt.hops !== undefined ? pkt.hops : (id === 1 ? 0 : 1));
+  node.rssi = Number(pkt.rssi || 0);
   node.lastSeen = isOnline ? Date.now() : node.lastSeen;
 
   if (isOnline && !wasOnline) {
-    addLog('INFO', `Node ${id} is ONLINE and transmitting`, id);
+    addLog('INFO', `Node ${id} is ONLINE (Parent: Node ${node.parent}, Hops: ${node.hops}, RSSI: ${node.rssi} dBm)`, id);
   } else if (!isOnline && wasOnline) {
     addLog('WARN', `Node ${id} reported OFFLINE by Root gateway`, id);
+  }
+
+  // Detect Self-Healing Dynamic Route Changes
+  if (isOnline && wasOnline && oldParent !== undefined && node.parent !== oldParent) {
+    if (node.parent === 2 && id === 3) {
+      addLog('WARN', `[SELF-HEALING] Node 3 direct path lost! Automatically rerouted via Node 2 (Multi-Hop Relay Active)`, id);
+    } else if (node.parent === 1 && id === 3) {
+      addLog('INFO', `[ROUTE RESTORED] Node 3 direct path to Root restored (Single-Hop Direct)`, id);
+    } else {
+      addLog('INFO', `[ROUTE UPDATE] Node ${id} updated parent: Node ${oldParent} -> Node ${node.parent}`, id);
+    }
   }
 
   if (node.fire === 1) {

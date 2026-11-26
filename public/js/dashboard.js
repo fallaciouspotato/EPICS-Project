@@ -233,6 +233,24 @@ function updateNodeCard(node) {
     badge.textContent = 'ONLINE';
   }
 
+  // Uplink display
+  const uplinkEl = document.getElementById(`uplink-${id}`);
+  if (uplinkEl) {
+    if (!node.online) {
+      uplinkEl.innerHTML = 'UPLINK: <strong>OFFLINE</strong>';
+    } else if (id === 1) {
+      uplinkEl.innerHTML = 'UPLINK: <strong>USB SERIAL HOST</strong>';
+    } else if (id === 2) {
+      uplinkEl.innerHTML = 'UPLINK: <strong class="text-emerald-700">ROOT AP (1-HOP) &bull; AP RELAY ON</strong>';
+    } else if (id === 3) {
+      if (node.parent === 2) {
+        uplinkEl.innerHTML = 'UPLINK: <strong class="text-amber-700 font-bold">NODE 2 RELAY (2-HOPS &bull; SELF-HEALED)</strong>';
+      } else {
+        uplinkEl.innerHTML = 'UPLINK: <strong class="text-emerald-700">ROOT AP (1-HOP DIRECT)</strong>';
+      }
+    }
+  }
+
   // Last seen
   if (lastSeenEl && node.lastSeen) {
     const d = new Date(node.lastSeen);
@@ -324,8 +342,11 @@ function updateKpis() {
     if (!serialConnected) {
       topoBadge.textContent = 'Awaiting Serial Stream';
       topoBadge.className = 'text-[11px] font-mono font-semibold bg-slate-100 text-slate-700 px-2 py-1 border border-slate-300';
+    } else if (nodes[3].online && nodes[3].parent === 2) {
+      topoBadge.textContent = 'SELF-HEALED: NODE 3 VIA NODE 2 RELAY';
+      topoBadge.className = 'text-[11px] font-mono font-bold bg-amber-100 text-amber-900 px-2 py-1 border border-amber-400';
     } else if (onlineCount === 3) {
-      topoBadge.textContent = '3 Nodes Active';
+      topoBadge.textContent = '3 Nodes Active (Direct Swarm)';
       topoBadge.className = 'text-[11px] font-mono font-semibold bg-emerald-100 text-emerald-800 px-2 py-1 border border-emerald-300';
     } else if (onlineCount > 0) {
       topoBadge.textContent = `${onlineCount}/3 Nodes Connected`;
@@ -418,8 +439,8 @@ function drawTopology() {
 
   const posLaptop = { x: 75, y: h / 2, label: 'HOST LAPTOP', sub: 'USB Interface' };
   const posNode1 = { x: w * 0.36, y: h / 2, label: 'NODE 01 (ROOT)', sub: 'AP: EPICS_MESH_ROOT', id: 1 };
-  const posNode2 = { x: w * 0.76, y: h * 0.28, label: 'NODE 02', sub: 'UDP Port: 5000', id: 2 };
-  const posNode3 = { x: w * 0.76, y: h * 0.72, label: 'NODE 03', sub: 'UDP Port: 5000', id: 3 };
+  const posNode2 = { x: w * 0.76, y: h * 0.28, label: 'NODE 02 (RELAY)', sub: 'AP: EPICS_RELAY_2', id: 2 };
+  const posNode3 = { x: w * 0.76, y: h * 0.72, label: 'NODE 03 (FIELD)', sub: nodes[3].parent === 2 ? 'Uplink: Node 2' : 'Uplink: Node 1', id: 3 };
 
   // 1. USB Wired link: Laptop <-> Root Node 1
   ctx.lineWidth = 2;
@@ -432,10 +453,22 @@ function drawTopology() {
   ctx.setLineDash([]);
 
   // 2. Wi-Fi UDP Link: Root Node 1 <---> Node 2
-  drawLink(posNode1, posNode2, nodes[2].online, nodes[2].online ? 'UDP LINK ACTIVE' : 'NODE 2 OFFLINE');
+  drawLink(posNode1, posNode2, nodes[2].online, nodes[2].online ? 'ROOT-RELAY (1-HOP)' : 'NODE 2 OFFLINE');
 
-  // 3. Wi-Fi UDP Link: Root Node 1 <---> Node 3
-  drawLink(posNode1, posNode3, nodes[3].online, nodes[3].online ? 'UDP LINK ACTIVE' : 'NODE 3 OFFLINE');
+  // 3. Dynamic Self-Healing Links for Node 3
+  const isHealedViaNode2 = (nodes[3].online && nodes[3].parent === 2);
+
+  if (isHealedViaNode2) {
+    // Direct Root <-> Node 3 link is down/bypassed
+    drawDottedAlertLink(posNode1, posNode3, '#ef4444', 'DIRECT LINK BYPASSED');
+    // Self-Healed Relay Link: Node 2 <---> Node 3
+    drawLink(posNode2, posNode3, true, 'SELF-HEALED (2-HOP RELAY)', '#d97706');
+  } else {
+    // Normal direct link: Root Node 1 <---> Node 3
+    drawLink(posNode1, posNode3, nodes[3].online, nodes[3].online ? 'DIRECT UDP (1-HOP)' : 'NODE 3 OFFLINE');
+    // Standby link: Node 2 <---> Node 3
+    drawStandbyLink(posNode2, posNode3, 'FAILOVER STANDBY');
+  }
 
   // Draw Boxes
   drawBox(posLaptop.x, posLaptop.y, 96, 46, '#0f172a', '#ffffff', posLaptop.label, posLaptop.sub);
@@ -446,9 +479,10 @@ function drawTopology() {
   requestAnimationFrame(drawTopology);
 }
 
-function drawLink(from, to, isOnline, label) {
+function drawLink(from, to, isOnline, label, customColor = null) {
+  const strokeColor = customColor ? customColor : (isOnline ? '#059669' : '#ef4444');
   ctx.lineWidth = 1.5;
-  ctx.strokeStyle = isOnline ? '#059669' : '#ef4444';
+  ctx.strokeStyle = strokeColor;
   ctx.setLineDash(isOnline ? [] : [4, 4]);
 
   ctx.beginPath();
@@ -460,15 +494,72 @@ function drawLink(from, to, isOnline, label) {
   // Midpoint label
   const midX = (from.x + to.x) / 2;
   const midY = (from.y + to.y) / 2;
+  const textWidth = Math.max(88, label.length * 6 + 16);
 
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(midX - 44, midY - 8, 88, 16);
+  ctx.fillRect(midX - textWidth / 2, midY - 8, textWidth, 16);
   ctx.lineWidth = 1;
   ctx.strokeStyle = '#cbd5e1';
-  ctx.strokeRect(midX - 44, midY - 8, 88, 16);
+  ctx.strokeRect(midX - textWidth / 2, midY - 8, textWidth, 16);
 
-  ctx.fillStyle = isOnline ? '#059669' : '#ef4444';
+  ctx.fillStyle = strokeColor;
   ctx.font = 'bold 8px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, midX, midY);
+}
+
+function drawDottedAlertLink(from, to, color, label) {
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = color;
+  ctx.setLineDash([4, 4]);
+
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const midX = (from.x + to.x) / 2;
+  const midY = (from.y + to.y) / 2;
+  const textWidth = Math.max(88, label.length * 6 + 16);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(midX - textWidth / 2, midY - 8, textWidth, 16);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#fca5a5';
+  ctx.strokeRect(midX - textWidth / 2, midY - 8, textWidth, 16);
+
+  ctx.fillStyle = color;
+  ctx.font = 'bold 8px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, midX, midY);
+}
+
+function drawStandbyLink(from, to, label) {
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.setLineDash([2, 4]);
+
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const midX = (from.x + to.x) / 2;
+  const midY = (from.y + to.y) / 2;
+  const textWidth = Math.max(88, label.length * 6 + 16);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(midX - textWidth / 2, midY - 8, textWidth, 16);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.strokeRect(midX - textWidth / 2, midY - 8, textWidth, 16);
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '8px "JetBrains Mono"';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, midX, midY);
